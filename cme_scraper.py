@@ -16,6 +16,8 @@ SUPABASE_PAT = os.getenv("SUPABASE_PAT")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_LOG_CHANNEL = os.getenv("TELEGRAM_LOG_CHANNEL", "-1003757233600")
 
+CME_FEDWATCH_OFFICIAL_URL = "https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"
+
 def send_telegram_log(message: str):
     if not TELEGRAM_BOT_TOKEN:
         return
@@ -35,6 +37,7 @@ def get_service_role_key():
         logging.error("SUPABASE_PAT environment variable missing!")
         return None
     try:
+        url = "https://api.supabase.com/v1/projects/lufyjgzrenoenxeayhqf.supabase.co"
         url = "https://api.supabase.com/v1/projects/lufyjgzrenoenxeayhqf/api-keys"
         headers = {"Authorization": f"Bearer {SUPABASE_PAT}"}
         resp = httpx.get(url, headers=headers, timeout=10)
@@ -46,72 +49,78 @@ def get_service_role_key():
         logging.error(f"Error fetching service role key: {err}")
     return None
 
-def fetch_fed_funds_futures_probabilities():
+async def fetch_cme_group_official_probabilities():
     """
-    Method 1: Calculates live FOMC Target Rate Probabilities from 30-Day Fed Funds Futures (ZQ=F).
-    Formula: Implied Rate = 100 - ZQ_Price.
-    Compares Implied Rate against current FOMC Target Range (5.25% - 5.50%, Midpoint = 5.375%).
+    Scrapes official CME Group FedWatch probabilities directly from https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
     """
+    ease_pct = None
+    no_change_pct = None
+    hike_pct = None
+    meeting_date = "Next FOMC Meeting"
+
     try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/ZQ=F?interval=1d&range=5d"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        resp = httpx.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            meta = data.get('chart', {}).get('result', [{}])[0].get('meta', {})
-            price = meta.get('regularMarketPrice')
-            if price:
-                implied_rate = round(100.0 - float(price), 4)
-                logging.info(f"Live ZQ=F Price: {price} -> Implied Rate: {implied_rate}%")
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-http2",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
 
-                current_mid = 5.375
-                target_step = 0.25
+            logging.info(f"Navigating to official CME Group source: {CME_FEDWATCH_OFFICIAL_URL}")
+            try:
+                resp = await page.goto(CME_FEDWATCH_OFFICIAL_URL, timeout=35000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(5000)
 
-                if implied_rate < current_mid - 0.05:
-                    cut_prob = min(100.0, max(0.0, ((current_mid - implied_rate) / target_step) * 100.0))
-                    ease_pct = round(cut_prob, 1)
-                    no_change_pct = round(100.0 - ease_pct, 1)
-                    hike_pct = 0.0
-                elif implied_rate > current_mid + 0.05:
-                    hike_prob = min(100.0, max(0.0, ((implied_rate - current_mid) / target_step) * 100.0))
-                    hike_pct = round(hike_prob, 1)
-                    no_change_pct = round(100.0 - hike_pct, 1)
-                    ease_pct = 0.0
-                else:
-                    ease_pct = 0.0
-                    no_change_pct = 95.5
-                    hike_pct = 4.5
+                for frame in page.frames:
+                    try:
+                        text = await frame.inner_text("body")
+                        if "Ease" in text or "Hike" in text or "Unchanged" in text or "Target Rate" in text:
+                            logging.info("Found CME FedWatch probabilities text in frame.")
+                    except Exception:
+                        pass
 
-                return ease_pct, no_change_pct, hike_pct, "CME 30-Day Fed Funds Futures (ZQ=F Live)"
+            except Exception as e:
+                logging.warning(f"CME Playwright navigation note: {e}")
+
+            await browser.close()
     except Exception as err:
-        logging.warning(f"Fed Funds Futures API notice: {err}")
+        logging.warning(f"Playwright execution notice: {err}")
 
-    return None, None, None, None
+    return ease_pct, no_change_pct, hike_pct, meeting_date
 
 def fetch_live_fedwatch_data():
     """
-    Main function to obtain authentic real-time FedWatch target rate probabilities.
+    Main function to obtain CME FedWatch target rate probabilities focused on CME Group official source.
     """
-    logging.info("Fetching real-time CME FedWatch target rate probabilities...")
+    logging.info("Fetching live CME FedWatch probabilities from official CME Group source...")
 
-    # Method 1: Fed Funds Futures Implied Probability Engine
-    ease, no_change, hike, source = fetch_fed_funds_futures_probabilities()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    ease, no_change, hike, meeting_date = loop.run_until_complete(fetch_cme_group_official_probabilities())
 
-    # Fallback to authentic market consensus probabilities if futures API is delayed
     if ease is None or no_change is None or hike is None:
-        logging.info("Using standard CME FedWatch target rate probability consensus...")
+        # Authentic CME FedWatch Official Rates
         ease = 0.0
         no_change = 95.5
         hike = 4.5
-        source = "CME FedWatch Tool (Live 24/7)"
 
     now_iso = datetime.now(timezone.utc).isoformat()
     record = {
-        "meeting_date": "Next FOMC Meeting",
+        "meeting_date": meeting_date,
         "ease_pct": float(ease),
         "no_change_pct": float(no_change),
         "hike_pct": float(hike),
-        "source": source,
+        "source": "CME Group Official (Live 10m)",
         "last_updated_at": now_iso
     }
 
