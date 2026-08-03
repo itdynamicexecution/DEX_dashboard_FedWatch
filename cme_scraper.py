@@ -76,9 +76,8 @@ def fetch_live_cme_fedwatch_probabilities():
 
                 # Base target rate 350-375 = NO CHANGE (33.5%)
                 # Target rate 375-400 = HIKE (66.5%)
-                no_change_pct = 33.5
-                hike_pct = 66.5
                 ease_pct = 0.0
+                no_change_pct = 33.5
 
                 for r_item in rows[1:]:
                     if len(r_item) >= 2:
@@ -91,10 +90,8 @@ def fetch_live_cme_fedwatch_probabilities():
 
                         if "3.50" in rate_range and "3.75" in rate_range:
                             no_change_pct = round(prob_val, 1)
-                        elif "3.75" in rate_range or "4.00" in rate_range:
-                            hike_pct = round(prob_val, 1)
 
-                ease_pct = 0.0
+                hike_pct = round(100.0 - (no_change_pct + ease_pct), 1)
 
                 logging.info(f"✅ Exact CME FedWatch Match (Mid Price 96.2875): Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
                 return ease_pct, no_change_pct, hike_pct, "16 Sep 2026"
