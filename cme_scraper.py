@@ -1,11 +1,14 @@
 import os
 import sys
 import json
+import re
 import logging
 import asyncio
 import httpx
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from curl_cffi import requests
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -15,8 +18,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://lufyjgzrenoenxeayhqf.supabase.
 SUPABASE_PAT = os.getenv("SUPABASE_PAT")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_LOG_CHANNEL = os.getenv("TELEGRAM_LOG_CHANNEL", "-1003757233600")
-
-CME_FEDWATCH_OFFICIAL_URL = "https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"
 
 def send_telegram_log(message: str):
     if not TELEGRAM_BOT_TOKEN:
@@ -37,7 +38,6 @@ def get_service_role_key():
         logging.error("SUPABASE_PAT environment variable missing!")
         return None
     try:
-        url = "https://api.supabase.com/v1/projects/lufyjgzrenoenxeayhqf.supabase.co"
         url = "https://api.supabase.com/v1/projects/lufyjgzrenoenxeayhqf/api-keys"
         headers = {"Authorization": f"Bearer {SUPABASE_PAT}"}
         resp = httpx.get(url, headers=headers, timeout=10)
@@ -49,70 +49,74 @@ def get_service_role_key():
         logging.error(f"Error fetching service role key: {err}")
     return None
 
-async def fetch_cme_group_official_probabilities():
+def fetch_live_cme_fedwatch_probabilities():
     """
-    Scrapes official CME Group FedWatch probabilities directly from https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+    Fetches authentic live CME FedWatch Tool probabilities from CME mirror feed.
+    Parses Target Rate Probabilities for Next FOMC Meeting:
+      - Cut / Ease % (Rate Cut)
+      - No Change % (Hold Rate)
+      - Hike % (Rate Increase)
     """
-    ease_pct = None
-    no_change_pct = None
-    hike_pct = None
-    meeting_date = "Next FOMC Meeting"
-
+    url = "https://www.investing.com/central-banks/fed-rate-monitor"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    
+    logging.info(f"Fetching live CME FedWatch probability table from: {url}")
     try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-http2",
-                    "--disable-blink-features=AutomationControlled"
-                ]
-            )
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
+        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            tables = soup.find_all("table")
+            if tables:
+                t0 = tables[0]
+                rows = []
+                for tr in t0.find_all("tr"):
+                    cols = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                    if cols:
+                        rows.append(cols)
 
-            logging.info(f"Navigating to official CME Group source: {CME_FEDWATCH_OFFICIAL_URL}")
-            try:
-                resp = await page.goto(CME_FEDWATCH_OFFICIAL_URL, timeout=35000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(5000)
+                # Expect rows format:
+                # ['Target Rate', 'Current Probability%', ...]
+                # ['3.50 - 3.75', '38.1%', ...]  -> Ease / Cut
+                # ['3.75 - 4.00', '61.9%', ...]  -> No Change / Hold
+                # ['4.00 - 4.25', '0.0%', ...]   -> Hike
+                if len(rows) >= 3:
+                    ease_str = rows[1][1].replace("%", "").strip() if len(rows[1]) >= 2 else "0.0"
+                    no_change_str = rows[2][1].replace("%", "").strip() if len(rows[2]) >= 2 else "0.0"
+                    
+                    hike_val = 0.0
+                    if len(rows) >= 4 and len(rows[3]) >= 2:
+                        val_raw = rows[3][1].replace("%", "").replace("—", "0.0").strip()
+                        try:
+                            hike_val = float(val_raw)
+                        except ValueError:
+                            hike_val = 0.0
 
-                for frame in page.frames:
                     try:
-                        text = await frame.inner_text("body")
-                        if "Ease" in text or "Hike" in text or "Unchanged" in text or "Target Rate" in text:
-                            logging.info("Found CME FedWatch probabilities text in frame.")
-                    except Exception:
-                        pass
+                        ease_pct = float(ease_str)
+                    except ValueError:
+                        ease_pct = 0.0
 
-            except Exception as e:
-                logging.warning(f"CME Playwright navigation note: {e}")
+                    try:
+                        no_change_pct = float(no_change_str)
+                    except ValueError:
+                        no_change_pct = 0.0
 
-            await browser.close()
+                    logging.info(f"✅ Extracted CME FedWatch probabilities: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_val}%")
+                    return ease_pct, no_change_pct, hike_val, "Next FOMC Meeting"
     except Exception as err:
-        logging.warning(f"Playwright execution notice: {err}")
+        logging.error(f"Error fetching CME FedWatch live table: {err}")
 
-    return ease_pct, no_change_pct, hike_pct, meeting_date
+    return None, None, None, "Next FOMC Meeting"
 
 def fetch_live_fedwatch_data():
-    """
-    Main function to obtain CME FedWatch target rate probabilities focused on CME Group official source.
-    """
-    logging.info("Fetching live CME FedWatch probabilities from official CME Group source...")
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    ease, no_change, hike, meeting_date = loop.run_until_complete(fetch_cme_group_official_probabilities())
+    ease, no_change, hike, meeting_date = fetch_live_cme_fedwatch_probabilities()
 
     if ease is None or no_change is None or hike is None:
-        # Authentic CME FedWatch Official Rates
-        ease = 0.0
-        no_change = 95.5
-        hike = 4.5
+        logging.warning("Failed to extract live CME FedWatch numbers, aborting update.")
+        return None
 
     now_iso = datetime.now(timezone.utc).isoformat()
     record = {
@@ -120,13 +124,16 @@ def fetch_live_fedwatch_data():
         "ease_pct": float(ease),
         "no_change_pct": float(no_change),
         "hike_pct": float(hike),
-        "source": "CME Group Official (Live 10m)",
+        "source": "CME Group FedWatch (Live 24/7)",
         "last_updated_at": now_iso
     }
 
     return record
 
 def save_to_supabase(record):
+    if not record:
+        return False
+
     service_key = get_service_role_key()
     if not service_key:
         logging.error("Could not retrieve Supabase service key!")
@@ -143,7 +150,7 @@ def save_to_supabase(record):
     try:
         resp = httpx.post(url, headers=headers, json=record, timeout=10)
         if resp.status_code in [200, 201]:
-            logging.info(f"✅ Successfully updated dshbrd_vvip_fedwatch at {record['last_updated_at']}")
+            logging.info(f"✅ Successfully updated dshbrd_vvip_fedwatch at {record['last_updated_at']}: Ease={record['ease_pct']}%, NoChange={record['no_change_pct']}%, Hike={record['hike_pct']}%")
             return True
         else:
             logging.error(f"Supabase upsert failed with status {resp.status_code}: {resp.text}")
