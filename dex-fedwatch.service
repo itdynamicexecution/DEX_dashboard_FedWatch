@@ -1,0 +1,14 @@
+[Unit]
+Description=DEX Dashboard Autonomous CME FedWatch Scraper & Live Probability Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/DEX_dashboard_FedWatch
+ExecStart=/root/DEX_dashboard_FedWatch/venv/bin/python3 main.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
