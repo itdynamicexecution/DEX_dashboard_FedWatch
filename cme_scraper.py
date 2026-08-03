@@ -95,7 +95,7 @@ def fetch_live_fedwatch_data():
     logging.info("Fetching real-time CME FedWatch target rate probabilities...")
 
     # Method 1: Fed Funds Futures Implied Probability Engine
-    ease, no_change, hike, source = fetch_fed_funds_probabilities()
+    ease, no_change, hike, source = fetch_fed_funds_futures_probabilities()
 
     # Fallback to authentic market consensus probabilities if futures API is delayed
     if ease is None or no_change is None or hike is None:
