@@ -11,6 +11,7 @@ async def get_real_cme_data():
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-http2',
                 '--disable-blink-features=AutomationControlled',
                 '--ignore-certificate-errors'
             ]
