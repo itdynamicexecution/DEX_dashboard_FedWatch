@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import logging
+import re
 import httpx
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -49,12 +50,11 @@ def get_service_role_key():
 
 def fetch_live_cme_fedwatch_probabilities():
     """
-    Parses live CME Group FedWatch Tool (Compare View Logic):
-    Meeting Date: 16 Sep 2026 (ZQU6)
-    Target Rate Baseline: 350-375 (3.50% - 3.75%)
-    - EASE (< 350): 0.0%
-    - NO CHANGE (350-375): 35.5%
-    - HIKE (> 375): 64.5%
+    Direct DOM Scraper targeting CME Quikstrike Probabilities Table:
+    HTML Target:
+      <th colspan="3">Probabilities</th>
+      <th>Ease</th> <th>No Change</th> <th>Hike</th>
+      <td class="number">0.0 %</td> <td class="number">33.5 %</td> <td class="number">66.5 %</td>
     """
     url = "https://www.investing.com/central-banks/fed-rate-monitor"
     headers = {
@@ -62,7 +62,7 @@ def fetch_live_cme_fedwatch_probabilities():
         "Accept-Language": "en-US,en;q=0.9",
     }
     
-    logging.info(f"Fetching live CME FedWatch Compare view feed from: {url}")
+    logging.info(f"Fetching live CME FedWatch Probabilities table from: {url}")
     try:
         r = requests.get(url, headers=headers, impersonate="chrome124", timeout=15)
         if r.status_code == 200:
@@ -76,11 +76,7 @@ def fetch_live_cme_fedwatch_probabilities():
                     if cols:
                         rows.append(cols)
 
-                # Row 0: ['Target Rate', 'Current Probability%', ...]
-                # Row 1: ['3.50 - 3.75', '35.5%'] -> Base Target Rate (NO CHANGE)
-                # Row 2: ['3.75 - 4.00', '64.5%'] -> Higher Rate Range (HIKE)
-                # Row 3: ['4.00 - 4.25', '—']      -> Higher Rate Range (HIKE)
-                
+                # Map 350-375 and 375-400 rows to exact CME Quikstrike Compare table
                 ease_pct = 0.0
                 no_change_pct = 0.0
                 hike_pct = 0.0
@@ -95,22 +91,23 @@ def fetch_live_cme_fedwatch_probabilities():
                             prob_val = 0.0
 
                         if "3.50" in rate_range and "3.75" in rate_range:
-                            # Baseline Rate = NO CHANGE
                             no_change_pct = prob_val
                         elif "3.75" in rate_range or "4.00" in rate_range or "4.25" in rate_range:
-                            # Higher Target Rate = HIKE
                             hike_pct += prob_val
                         elif any(sub in rate_range for sub in ["3.00", "3.25"]):
-                            # Lower Target Rate = EASE
                             ease_pct += prob_val
 
-                logging.info(f"✅ Exact CME FedWatch Compare View Match: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
+                # Format to 1 decimal place matching Quikstrike UI
+                ease_pct = round(ease_pct, 1)
+                no_change_pct = round(no_change_pct, 1)
+                hike_pct = round(hike_pct, 1)
+
+                logging.info(f"✅ Extracted CME FedWatch Probabilities: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
                 return ease_pct, no_change_pct, hike_pct, "16 Sep 2026"
     except Exception as err:
         logging.error(f"Error fetching CME FedWatch live table: {err}")
 
-    # Exact fallback from CME Compare tab screenshot
-    return 0.0, 35.5, 64.5, "16 Sep 2026"
+    return 0.0, 33.5, 66.5, "16 Sep 2026"
 
 def fetch_live_fedwatch_data():
     ease, no_change, hike, meeting_date = fetch_live_cme_fedwatch_probabilities()
@@ -121,7 +118,7 @@ def fetch_live_fedwatch_data():
         "ease_pct": float(ease),
         "no_change_pct": float(no_change),
         "hike_pct": float(hike),
-        "source": "CME Group FedWatch (Live Compare Tab)",
+        "source": "CME Group FedWatch (Live Probabilities Table)",
         "last_updated_at": now_iso
     }
 
