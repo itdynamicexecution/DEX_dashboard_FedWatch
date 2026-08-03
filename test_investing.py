@@ -7,16 +7,23 @@ def inspect_page():
     url = 'https://www.investing.com/central-banks/fed-rate-monitor'
     r = requests.get(url, headers=headers, impersonate='chrome120', timeout=15)
     
+    print("Length:", len(r.text))
     soup = BeautifulSoup(r.text, 'html.parser')
-    text = soup.get_text()
     
-    # Print lines containing % or probabilities
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    print(f"Total lines: {len(lines)}")
-    
-    for i, line in enumerate(lines):
-        if any(k in line.lower() for k in ["ease", "hike", "no change", "probability", "meeting", "5.25", "5.50", "4.75"]):
-            print(f"Line {i}: {line}")
+    # Print all links or iframes
+    iframes = soup.find_all('iframe')
+    print(f"Total iframes: {len(iframes)}")
+    for f in iframes:
+        print("Iframe src:", f.get('src'))
+        
+    # Search for any table or div with class containing rate or fed
+    divs = soup.find_all(['div', 'table', 'section'])
+    for d in divs:
+        text = d.get_text(strip=True)
+        if "Ease" in text or "Hike" in text or "No Change" in text:
+            print(f"--- Found in {d.name} (class={d.get('class')}) ---")
+            print(text[:300])
+            break
 
 if __name__ == '__main__':
     inspect_page()
