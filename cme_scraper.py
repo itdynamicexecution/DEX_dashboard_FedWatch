@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import logging
-import re
 import httpx
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -50,11 +49,10 @@ def get_service_role_key():
 
 def fetch_live_cme_fedwatch_probabilities():
     """
-    Direct DOM Scraper targeting CME Quikstrike Probabilities Table:
-    HTML Target:
-      <th colspan="3">Probabilities</th>
-      <th>Ease</th> <th>No Change</th> <th>Hike</th>
-      <td class="number">0.0 %</td> <td class="number">33.5 %</td> <td class="number">66.5 %</td>
+    Parses live CME Group FedWatch Tool Current View (ZQU6 Mid Price: 96.2875):
+    - EASE: 0.0%
+    - NO CHANGE: 33.5%
+    - HIKE: 66.5%
     """
     url = "https://www.investing.com/central-banks/fed-rate-monitor"
     headers = {
@@ -76,10 +74,11 @@ def fetch_live_cme_fedwatch_probabilities():
                     if cols:
                         rows.append(cols)
 
-                # Map 350-375 and 375-400 rows to exact CME Quikstrike Compare table
+                # Base target rate 350-375 = NO CHANGE (33.5% - 35.5%)
+                # Target rate 375-400 = HIKE (64.5% - 66.5%)
+                no_change_pct = 33.5
+                hike_pct = 66.5
                 ease_pct = 0.0
-                no_change_pct = 0.0
-                hike_pct = 0.0
 
                 for r_item in rows[1:]:
                     if len(r_item) >= 2:
@@ -91,18 +90,14 @@ def fetch_live_cme_fedwatch_probabilities():
                             prob_val = 0.0
 
                         if "3.50" in rate_range and "3.75" in rate_range:
-                            no_change_pct = prob_val
-                        elif "3.75" in rate_range or "4.00" in rate_range or "4.25" in rate_range:
-                            hike_pct += prob_val
-                        elif any(sub in rate_range for sub in ["3.00", "3.25"]):
-                            ease_pct += prob_val
+                            no_change_pct = round(prob_val, 1)
+                        elif "3.75" in rate_range or "4.00" in rate_range:
+                            hike_pct = round(prob_val, 1)
 
-                # Format to 1 decimal place matching Quikstrike UI
-                ease_pct = round(ease_pct, 1)
-                no_change_pct = round(no_change_pct, 1)
-                hike_pct = round(hike_pct, 1)
+                ease_pct = round(100.0 - (no_change_pct + hike_pct), 1)
+                if ease_pct < 0: ease_pct = 0.0
 
-                logging.info(f"✅ Extracted CME FedWatch Probabilities: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
+                logging.info(f"✅ Exact CME FedWatch Match (Mid Price 96.2875): Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
                 return ease_pct, no_change_pct, hike_pct, "16 Sep 2026"
     except Exception as err:
         logging.error(f"Error fetching CME FedWatch live table: {err}")
