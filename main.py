@@ -8,7 +8,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "10"))
+INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "1"))
 
 def main():
     logging.info("🚀 Starting DEX Dashboard FedWatch Autonomous Daemon...")

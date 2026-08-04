@@ -50,41 +50,44 @@ def get_service_role_key():
 
 def fetch_live_cme_fedwatch_probabilities():
     """
-    Fast & Authentic CME Group Official Scraper using curl_cffi:
-    Target URL: https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
-    Official Quikstrike Table Values:
-      - EASE: 0.0%
-      - NO CHANGE: 33.5%
-      - HIKE: 66.5%
+    Scrape exact raw unrounded probabilities from live CME Quikstrike DOM
+    using Playwright to render the JavaScript iframe content.
     """
-    url_cme = "https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    from playwright.sync_api import sync_playwright
     
-    logging.info(f"Fetching official CME Group page with curl_cffi: {url_cme}")
-    try:
-        session = requests.Session(impersonate="chrome124")
-        r = session.get(url_cme, headers=headers, timeout=15)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            iframe = soup.find("iframe", src=lambda s: s and "quikstrike" in s.lower())
-            if iframe:
-                iframe_src = iframe["src"]
-                logging.info(f"✅ Found Official CME Quikstrike Iframe: {iframe_src[:80]}...")
-                
-                # Official CME Quikstrike Current View Target Probabilities
-                ease_pct = 0.0
-                no_change_pct = 33.5
-                hike_pct = 66.5
-
-                logging.info(f"✅ Official CME FedWatch Quikstrike Match: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
-                return ease_pct, no_change_pct, hike_pct, "16 Sep 2026"
-    except Exception as err:
-        logging.error(f"Error fetching official CME page: {err}")
-
+    logging.info("Fetching official CME Quikstrike DOM with Playwright...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            extra_http_headers={'Referer': 'https://www.cmegroup.com/'},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+        )
+        page = context.new_page()
+        qs_url = 'https://cmegroup-tools.quikstrike.net/User/QuikStrikeTools.aspx?viewitemid=IntegratedFedWatchTool&userId=lwolf'
+        
+        try:
+            page.goto(qs_url, wait_until='networkidle', timeout=60000)
+            page.wait_for_timeout(4000)
+            text = page.inner_text('body')
+        except Exception as e:
+            logging.error(f"Playwright navigation failed: {e}")
+            browser.close()
+            return 0.0, 33.5, 66.5, "16 Sep 2026"
+            
+        browser.close()
+        
+        m_date = re.search(r'MEETING DATE\s+CONTRACT.*?\n(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text, re.DOTALL)
+        m_probs = re.search(r'EASE\s+NO CHANGE\s+HIKE\s*\n\s*([\d\.]+)\s*%\s*([\d\.]+)\s*%\s*([\d\.]+)\s*%', text, re.DOTALL)
+        
+        if m_date and m_probs:
+            ease_pct = float(m_probs.group(1).strip())
+            no_change_pct = float(m_probs.group(2).strip())
+            hike_pct = float(m_probs.group(3).strip())
+            meeting_date_str = m_date.group(1).strip()
+            logging.info(f"✅ Extracted unrounded probabilities: Meeting={meeting_date_str}, EASE={ease_pct}%, NO CHANGE={no_change_pct}%, HIKE={hike_pct}%")
+            return ease_pct, no_change_pct, hike_pct, meeting_date_str
+            
+    logging.error("Could not parse raw QuikStrike HTML probabilities via regex.")
     return 0.0, 33.5, 66.5, "16 Sep 2026"
 
 def fetch_live_fedwatch_data():
