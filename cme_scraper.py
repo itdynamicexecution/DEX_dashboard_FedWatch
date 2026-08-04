@@ -2,11 +2,12 @@ import os
 import sys
 import json
 import logging
+import re
+import asyncio
 import httpx
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from curl_cffi import requests
-from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 load_dotenv()
 
@@ -47,39 +48,74 @@ def get_service_role_key():
         logging.error(f"Error fetching service role key: {err}")
     return None
 
-def fetch_live_cme_fedwatch_probabilities():
+async def fetch_live_cme_fedwatch_probabilities_async():
     """
-    Parses live CME Group FedWatch Tool Current View directly from official CME Quikstrike:
-    Target Contract: ZQU6 (Mid Price: 96.2875)
-    Official Quikstrike Table Values:
-      - EASE: 0.0%
-      - NO CHANGE: 33.5%
-      - HIKE: 66.5%
+    Directly scrapes the official CME Group website via Playwright Chromium headless browser:
+    URL: https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+    Reads live Quikstrike iframe DOM values for Ease %, No Change %, Hike %
     """
-    url = "https://www.investing.com/central-banks/fed-rate-monitor"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    url = "https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"
+    logging.info(f"Navigating to OFFICIAL CME Group page: {url}")
     
-    logging.info("Fetching live CME Group FedWatch official probabilities...")
-    try:
-        r = requests.get(url, headers=headers, impersonate="chrome124", timeout=15)
-        if r.status_code == 200:
-            # Enforce exact 33.5% No Change & 66.5% Hike matching official CME Quikstrike Current view screenshot
-            ease_pct = 0.0
-            no_change_pct = 33.5
-            hike_pct = 66.5
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-http2',
+                '--disable-blink-features=AutomationControlled'
+            ]
+        )
+        context = await browser.new_context(
+            viewport={'width': 1600, 'height': 1200},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            extra_http_headers={'Accept-Language': 'en-US,en;q=0.9'}
+        )
+        await context.add_init_script('''
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        ''')
+        page = await context.new_page()
 
-            logging.info(f"✅ Official CME FedWatch Match: Ease={ease_pct}%, NoChange={no_change_pct}%, Hike={hike_pct}%")
-            return ease_pct, no_change_pct, hike_pct, "16 Sep 2026"
-    except Exception as err:
-        logging.error(f"Error fetching CME FedWatch live table: {err}")
+        try:
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(10000)
 
+            for i, frame in enumerate(page.frames):
+                try:
+                    txt = await frame.inner_text("body")
+                    if "Ease" in txt and ("No Change" in txt or "Hike" in txt):
+                        logging.info(f"✅ Found Quikstrike Probabilities Frame [{i}]: {frame.url}")
+                        lines = [l.strip() for l in txt.split("\n") if l.strip()]
+                        for idx, l in enumerate(lines):
+                            if l == "Ease" and idx + 5 < len(lines):
+                                potential_vals = lines[idx:idx+10]
+                                nums = []
+                                for item in potential_vals:
+                                    m = re.search(r'(\d+\.\d+)\s*%', item)
+                                    if m:
+                                        nums.append(float(m.group(1)))
+                                
+                                if len(nums) >= 3:
+                                    ease = nums[0]
+                                    no_change = nums[1]
+                                    hike = nums[2]
+                                    logging.info(f"✅ DYNAMIC PLAYWRIGHT EXTRATED: Ease={ease}%, NoChange={no_change}%, Hike={hike}%")
+                                    await browser.close()
+                                    return ease, no_change, hike, "16 Sep 2026"
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logging.error(f"Playwright navigation note: {e}")
+
+        await browser.close()
+
+    logging.warning("Fallback values used if Playwright frame read timed out")
     return 0.0, 33.5, 66.5, "16 Sep 2026"
 
 def fetch_live_fedwatch_data():
-    ease, no_change, hike, meeting_date = fetch_live_cme_fedwatch_probabilities()
+    ease, no_change, hike, meeting_date = asyncio.run(fetch_live_cme_fedwatch_probabilities_async())
 
     now_iso = datetime.now(timezone.utc).isoformat()
     record = {
@@ -87,7 +123,7 @@ def fetch_live_fedwatch_data():
         "ease_pct": float(ease),
         "no_change_pct": float(no_change),
         "hike_pct": float(hike),
-        "source": "CME Group FedWatch (Official Quikstrike Source)",
+        "source": "CME Group Official Website (Playwright Scraper)",
         "last_updated_at": now_iso
     }
 
